@@ -15,7 +15,7 @@ const CL = {
   C: { bg: "#dcfce7", border: "#86efac", text: "#14532d" },
 };
 
-const CLASS_BONUS = { A: 8, B: 4, C: 0 };
+const CLASS_BONUS = { A: 30, B: 15, C: 0 };
 const CLASS_RANK = { A: 0, B: 1, C: 2 };
 
 function uid() { return Math.random().toString(36).slice(2, 8); }
@@ -37,18 +37,24 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
   const outfieldPlayed = {};
   const totalPlayed = {};
   const totalBenched = {};
-  allAvail.forEach(p => { outfieldPlayed[p.id] = 0; totalPlayed[p.id] = 0; totalBenched[p.id] = 0; });
+  const h1Played = {};
+  const h2Played = {};
+  allAvail.forEach(p => {
+    outfieldPlayed[p.id] = 0; totalPlayed[p.id] = 0;
+    totalBenched[p.id] = 0; h1Played[p.id] = 0; h2Played[p.id] = 0;
+  });
   const rotation = [];
 
   for (let pi = 0; pi < 6; pi++) {
     const avail = getAvail(pi);
-    const isH2 = pi >= 3;
+    const isH1 = pi < 3;
     const isHT = pi === 3;
     const maxSubs = isHT ? 999 : 4;
+    const remainingInHalf = isH1 ? (2 - pi) : (5 - pi);
 
-    let gkId = isH2 ? gkH2Id : gkH1Id;
+    let gkId = (pi >= 3) ? gkH2Id : gkH1Id;
     if (!avail.find(p => p.id === gkId)) {
-      gkId = isH2 ? gkH1Id : gkH2Id;
+      gkId = (pi >= 3) ? gkH1Id : gkH2Id;
       if (!avail.find(p => p.id === gkId)) {
         const fb = avail.find(p => p.isGK) || avail[0];
         gkId = fb?.id;
@@ -64,77 +70,74 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
       const bench = avail.map(p => p.id).filter(id => !onField.includes(id));
       rotation.push({ gkId, onField, bench });
       onField.forEach(id => {
-        totalPlayed[id]++;
+        totalPlayed[id]++; h1Played[id]++;
         if (id !== gkId) outfieldPlayed[id]++;
       });
       bench.forEach(id => { totalBenched[id]++; });
       continue;
     }
 
-    // === BUILD IDEAL LINEUP ===
-    // 1. GK always on field
-    const idealOnField = [gkId];
+    // === SCORE EACH OUTFIELD CANDIDATE ===
+    // Higher score = more deserving to play
+    const score = (id) => {
+      const p = allAvail.find(x => x.id === id);
+      // Class priority: A=30, B=15, C=0 — dominant factor
+      let s = (CLASS_BONUS[p?.class] || 0);
+      // Balance within class: fewer outfield periods = higher priority
+      s -= (outfieldPlayed[id] || 0) * 10;
 
-    // 2. Force in players who've been benched 2 periods (max bench = 2)
-    const forced = avail.filter(p => p.id !== gkId && totalBenched[p.id] >= 2);
-    forced.forEach(p => idealOnField.push(p.id));
+      // HARD: must play if benched 2 periods total (max bench = 2)
+      if (totalBenched[id] >= 2) s += 10000;
 
-    // 3. GK outfield: other half's GK must play 4-5 total, rest 1-2
-    const otherGk = (gkId === gkH1Id) ? gkH2Id : gkH1Id;
-    if (otherGk && avail.find(p => p.id === otherGk) && !idealOnField.includes(otherGk)) {
-      const gkTotal = totalPlayed[otherGk] || 0;
-      const remaining = 5 - pi;
-      const gkNeeded = 4 - gkTotal;
-      if (gkNeeded > 0 && gkNeeded >= remaining) idealOnField.push(otherGk);
-    }
+      // HARD: must play at least 1 period in each half
+      const hPlayed = isH1 ? h1Played[id] : h2Played[id];
+      if (hPlayed === 0 && remainingInHalf === 0) s += 10000;
+      else if (hPlayed === 0 && remainingInHalf === 1) s += 5000;
 
-    // 4. Fill remaining by strict class priority (A > B > C),
-    //    within class balance by fewer outfield minutes
-    const spotsLeft = Math.min(9, avail.length) - idealOnField.length;
-    if (spotsLeft > 0) {
-      const candidates = avail.filter(p =>
-        !idealOnField.includes(p.id) &&
-        !((p.id === gkH1Id || p.id === gkH2Id) && (totalPlayed[p.id] || 0) >= 5)
-      ).sort((a, b) => {
-        if (CLASS_RANK[a.class] !== CLASS_RANK[b.class]) return CLASS_RANK[a.class] - CLASS_RANK[b.class];
-        return (outfieldPlayed[a.id] || 0) - (outfieldPlayed[b.id] || 0);
-      });
-      candidates.slice(0, spotsLeft).forEach(p => idealOnField.push(p.id));
-    }
+      // GK rest: play 4-5 total, rest 1-2
+      const isGKPlayer = (id === gkH1Id || id === gkH2Id) && id !== gkId;
+      if (isGKPlayer) {
+        const total = totalPlayed[id] || 0;
+        if (total >= 5) s -= 20000;
+        const remaining = 5 - pi;
+        const needed = 4 - total;
+        if (needed > 0 && needed >= remaining) s += 10000;
+        // GK must also play each half
+        const gkH = isH1 ? h1Played[id] : h2Played[id];
+        if (gkH === 0 && remainingInHalf === 0) s += 10000;
+      }
+
+      return s;
+    };
+
+    // Select top 8 outfield by score
+    const outfield = avail.filter(p => p.id !== gkId);
+    const idealOutfield = [...outfield].sort((a, b) => score(b.id) - score(a.id)).slice(0, 8);
+    const idealOnField = [gkId, ...idealOutfield.map(p => p.id)];
+    const idealSet = new Set(idealOnField);
+
+    // Identify forced players (score >= 5000, hard constraints)
+    const forcedIds = new Set();
+    outfield.forEach(p => { if (score(p.id) >= 5000) forcedIds.add(p.id); });
 
     // === ENFORCE MAX SUBS ===
     const prevOnAvail = rotation[pi - 1].onField.filter(id => isAvail(id, pi));
     const prevSet = new Set(prevOnAvail);
-    const idealSet = new Set(idealOnField);
-
     const incoming = idealOnField.filter(id => !prevSet.has(id));
 
     let finalOnField;
     if (incoming.length <= maxSubs) {
       finalOnField = [...idealOnField];
     } else {
-      // Forced players (bench>=2) and GK must come in regardless
-      const forcedIds = new Set(forced.map(p => p.id));
       const mustIn = incoming.filter(id => id === gkId || forcedIds.has(id));
       const optionalIn = incoming.filter(id => id !== gkId && !forcedIds.has(id));
-
       const subsLeft = Math.max(0, maxSubs - mustIn.length);
-      // Among optional, keep class priority order
-      const optSorted = optionalIn.sort((a, b) => {
-        const pa = allAvail.find(x => x.id === a), pb = allAvail.find(x => x.id === b);
-        if (CLASS_RANK[pa?.class] !== CLASS_RANK[pb?.class]) return CLASS_RANK[pa?.class] - CLASS_RANK[pb?.class];
-        return (outfieldPlayed[a] || 0) - (outfieldPlayed[b] || 0);
-      });
+      const optSorted = optionalIn.sort((a, b) => score(b) - score(a));
       const actualOptIn = optSorted.slice(0, subsLeft);
       const actualIn = new Set([...mustIn, ...actualOptIn]);
 
-      // Who goes out: lowest class priority first
       const outgoing = prevOnAvail.filter(id => !idealSet.has(id));
-      const outSorted = outgoing.sort((a, b) => {
-        const pa = allAvail.find(x => x.id === a), pb = allAvail.find(x => x.id === b);
-        if (CLASS_RANK[pa?.class] !== CLASS_RANK[pb?.class]) return CLASS_RANK[pb?.class] - CLASS_RANK[pa?.class];
-        return (outfieldPlayed[b] || 0) - (outfieldPlayed[a] || 0);
-      });
+      const outSorted = outgoing.sort((a, b) => score(a) - score(b));
       const actualOut = new Set(outSorted.slice(0, actualIn.size));
 
       finalOnField = [gkId];
@@ -146,7 +149,6 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
       });
     }
 
-    // Fill if needed
     const targetSize = Math.min(9, avail.length);
     while (finalOnField.length < targetSize) {
       const fill = avail.find(p => !finalOnField.includes(p.id));
@@ -158,6 +160,7 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
     rotation.push({ gkId, onField: finalOnField, bench });
     finalOnField.forEach(id => {
       totalPlayed[id]++;
+      if (isH1) h1Played[id]++; else h2Played[id]++;
       if (id !== gkId) outfieldPlayed[id]++;
     });
     bench.forEach(id => { totalBenched[id]++; });
