@@ -107,6 +107,19 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
         if (gkH === 0 && remainingInHalf === 0) s += 10000;
       }
 
+      // HARD: 150% cap enforcement (field players only, excludes GKs)
+      // No field player's minutes can exceed 150% of the lowest field player's minutes
+      if (id !== gkH1Id && id !== gkH2Id && pi >= 2) {
+        const nonGkAvail = avail.filter(x =>
+          x.id !== gkH1Id && x.id !== gkH2Id && x.id !== gkId
+        );
+        const currentMins = nonGkAvail.map(x => outfieldPlayed[x.id]);
+        const minOF = Math.min(...currentMins);
+        const effectiveMin = Math.max(minOF, 2); // floor of 2 periods to avoid early-game noise
+        const myProjected = (outfieldPlayed[id] || 0) + 1;
+        if (myProjected > 1.5 * effectiveMin) s -= 8000;
+      }
+
       return s;
     };
 
