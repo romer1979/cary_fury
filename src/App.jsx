@@ -129,10 +129,6 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
     const idealOnField = [gkId, ...idealOutfield.map(p => p.id)];
     const idealSet = new Set(idealOnField);
 
-    // Identify forced players (score >= 5000, hard constraints)
-    const forcedIds = new Set();
-    outfield.forEach(p => { if (score(p.id) >= 5000) forcedIds.add(p.id); });
-
     // === ENFORCE MAX SUBS ===
     const prevOnAvail = rotation[pi - 1].onField.filter(id => isAvail(id, pi));
     const prevSet = new Set(prevOnAvail);
@@ -142,13 +138,27 @@ function generateRotation(players, availSet, startingIds, gkH1Id, gkH2Id, remova
     if (incoming.length <= maxSubs) {
       finalOnField = [...idealOnField];
     } else {
-      const mustIn = incoming.filter(id => id === gkId || forcedIds.has(id));
-      const optionalIn = incoming.filter(id => id !== gkId && !forcedIds.has(id));
-      const subsLeft = Math.max(0, maxSubs - mustIn.length);
-      const optSorted = optionalIn.sort((a, b) => score(b) - score(a));
-      const actualOptIn = optSorted.slice(0, subsLeft);
-      const actualIn = new Set([...mustIn, ...actualOptIn]);
+      // Strictly limit to maxSubs incoming players
+      // Only truly critical players (benched>=2, must-play-half) can exceed the limit
+      const critical = new Set();
+      incoming.forEach(id => {
+        if (id === gkId) critical.add(id);
+        else if (totalBenched[id] >= 2) critical.add(id);
+        else {
+          const hp = isH1 ? h1Played[id] : h2Played[id];
+          if (hp === 0 && remainingInHalf === 0) critical.add(id);
+        }
+      });
 
+      // If critical alone exceeds maxSubs, allow them (unavoidable)
+      // Otherwise cap total incoming at maxSubs
+      const nonCriticalIn = incoming.filter(id => !critical.has(id));
+      const subsForNonCritical = Math.max(0, maxSubs - critical.size);
+      const nonCritSorted = nonCriticalIn.sort((a, b) => score(b) - score(a));
+      const actualNonCritIn = nonCritSorted.slice(0, subsForNonCritical);
+      const actualIn = new Set([...critical, ...actualNonCritIn]);
+
+      // Determine who goes out (same count as incoming)
       const outgoing = prevOnAvail.filter(id => !idealSet.has(id));
       const outSorted = outgoing.sort((a, b) => score(a) - score(b));
       const actualOut = new Set(outSorted.slice(0, actualIn.size));
